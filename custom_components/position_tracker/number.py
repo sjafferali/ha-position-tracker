@@ -17,12 +17,24 @@ automations, or by other integrations.
 
 Source state transitions are still used, but only to set the `move_direction`
 attribute for "moving right now" display.
+
+Slider drags and superseding moves
+----------------------------------
+async_set_native_value performs an open-loop move: it computes how many
+open/close presses are needed to reach the target and fires them in
+sequence on a background task, while optimistically jumping the entity
+value to the target so the slider doesn't snap back. If a new target
+arrives while a move is in flight, the in-flight move is cancelled, the
+position is corrected to reflect only the presses that actually fired,
+the source is sent a stop, and the new move starts from the corrected
+position.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -51,6 +63,26 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _PendingMove:
+    """A slider-driven open-loop move in progress.
+
+    start_position: the entity position when this move began (before the
+        optimistic jump to target).
+    direction: "open" or "close".
+    total_presses: how many source presses were planned.
+    fired: how many have actually completed (incremented after each
+        awaited service call returns).
+    task: the background task running the press loop, if any.
+    """
+
+    start_position: float
+    direction: str
+    total_presses: int
+    fired: int = 0
+    task: "asyncio.Task[None] | None" = None
 
 
 async def async_setup_entry(
@@ -126,6 +158,9 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         # incrementally-counted intermediate values).
         self._presses_to_suppress = 0
 
+        # The in-flight slider-driven move, if any.
+        self._pending_move: _PendingMove | None = None
+
         self._attr_unique_id = (
             f"{entry_id}_{_slugify(source_entity)}_{_slugify(name)}"
         )
@@ -176,7 +211,7 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         )
 
     async def async_will_remove_from_hass(self) -> None:
-        """Tear down subscriptions."""
+        """Tear down subscriptions and any in-flight move."""
         if self._unsub_state is not None:
             self._unsub_state()
             self._unsub_state = None
@@ -186,6 +221,13 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         if self._move_direction_timer is not None:
             self._move_direction_timer.cancel()
             self._move_direction_timer = None
+        if (
+            self._pending_move is not None
+            and self._pending_move.task is not None
+            and not self._pending_move.task.done()
+        ):
+            self._pending_move.task.cancel()
+        self._pending_move = None
         await super().async_will_remove_from_hass()
 
     # Press counting (primary position update path)
@@ -309,24 +351,24 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         no-op — we can't get any closer with the source's discrete motion.
 
         Otherwise:
-          1. Optimistically set position to target and push state, so the
-             slider in the UI lands on the target value immediately
-             instead of snapping back and animating.
-          2. Mark the next N self-initiated press counts to be suppressed
-             (those will reach our service-call listener as we forward
-             cover.open_cover / close_cover calls; they'd otherwise
-             over-write the optimistic position with intermediate values).
-          3. Fire the calls sequentially, awaiting each so the source's
-             pulse burst completes before the next.
-
-        Caveat: dragging the slider again before the previous motion
-        completes will start a second loop in parallel; the bed will
-        receive interleaved commands and position will drift. Use
-        position_tracker.set_position to re-sync if that happens.
+          1. Cancel any in-flight move and correct the position to reflect
+             only the presses that actually fired (then start fresh).
+          2. Optimistically set position to target and push state, so the
+             slider lands on the target value immediately instead of
+             snapping back.
+          3. Add the planned press count to the suppression counter; the
+             service-call listener decrements it and skips position updates
+             for those presses so they don't clobber the optimistic value.
+          4. Fire the calls on a background task, awaiting each so the
+             source's pulse burst completes before the next.
         """
         target = max(0.0, min(float(self._max_angle), float(value)))
-        delta = target - self._position
 
+        # Supersede any in-flight move first; this corrects self._position
+        # to wherever the bed actually got to.
+        await self._cancel_pending_move()
+
+        delta = target - self._position
         presses = int(round(abs(delta) / self._delta_per_press))
         if presses == 0:
             _LOGGER.debug(
@@ -335,11 +377,19 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
             )
             return
 
-        service = "open_cover" if delta > 0 else "close_cover"
+        direction = "open" if delta > 0 else "close"
+        service = f"{direction}_cover"
         _LOGGER.info(
             "%s: target %.1f° (current %.1f°, delta %.1f°) -> firing %d %s calls",
             self.entity_id, target, self._position, delta, presses, service,
         )
+
+        move = _PendingMove(
+            start_position=self._position,
+            direction=direction,
+            total_presses=presses,
+        )
+        self._pending_move = move
 
         # Optimistic update: jump to target immediately; suppress next N
         # self-initiated press updates so the loop's own presses don't
@@ -348,18 +398,107 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         self._presses_to_suppress += presses
         self.async_write_ha_state()
 
-        for _ in range(presses):
+        move.task = self.hass.async_create_task(
+            self._run_move(move, service),
+            name=f"position_tracker move {self.entity_id} -> {target}°",
+        )
+        # Intentionally not awaited: the HA service call should return
+        # promptly (the optimistic state is already pushed). The move runs
+        # in the background and may be superseded by a later set call.
+
+    async def _run_move(self, move: _PendingMove, service: str) -> None:
+        """Fire the planned presses for `move`, tracking how many completed."""
+        try:
+            for _ in range(move.total_presses):
+                await self.hass.services.async_call(
+                    "cover",
+                    service,
+                    {"entity_id": self._source_entity},
+                    blocking=True,
+                )
+                move.fired += 1
+        except asyncio.CancelledError:
+            # _cancel_pending_move handles position correction and stop.
+            raise
+        except Exception:  # noqa: BLE001 — keep state consistent on any failure
+            _LOGGER.exception("%s: move execution failed", self.entity_id)
+            if self._pending_move is move:
+                self._apply_actual_motion(move)
+                self._pending_move = None
+                self.async_write_ha_state()
+        else:
+            if self._pending_move is move:
+                # Clean completion: position is already at target, the
+                # suppression counter has been drained by the listener.
+                self._pending_move = None
+
+    def _apply_actual_motion(self, move: _PendingMove) -> None:
+        """Reconcile state after a move ends early.
+
+        Sets the position to reflect only the presses `move` actually fired,
+        and releases the suppression counter for the presses that won't fire
+        (so externally-issued presses are still counted normally).
+        """
+        if move.direction == "open":
+            actual = move.start_position + move.fired * self._delta_per_press
+        else:
+            actual = move.start_position - move.fired * self._delta_per_press
+        self._position = max(0.0, min(float(self._max_angle), actual))
+
+        unfired = max(0, move.total_presses - move.fired)
+        self._presses_to_suppress = max(0, self._presses_to_suppress - unfired)
+
+    async def _cancel_pending_move(self) -> None:
+        """Cancel any in-flight move, correct position, and stop the source.
+
+        Safe to call when there is no pending move. After this returns,
+        self._position reflects the presses that actually fired, the
+        suppression counter is consistent, and the source has been sent a
+        stop command.
+        """
+        move = self._pending_move
+        if move is None:
+            return
+        self._pending_move = None
+
+        task = move.task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 — defensive
+                _LOGGER.exception("%s: error awaiting cancelled move", self.entity_id)
+
+        self._apply_actual_motion(move)
+
+        # The last fired press may still be coasting; halt it.
+        try:
             await self.hass.services.async_call(
                 "cover",
-                service,
+                "stop_cover",
                 {"entity_id": self._source_entity},
                 blocking=True,
             )
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "%s: stop_cover after cancel failed", self.entity_id, exc_info=True
+            )
+
+        self.async_write_ha_state()
+        _LOGGER.info(
+            "%s: superseded move (fired %d/%d), position corrected to %.1f°",
+            self.entity_id, move.fired, move.total_presses, self._position,
+        )
 
     # Service-callable helpers
 
     async def async_sync_position(self, position: float) -> None:
         """Snap position to a known value (called by the set_position service)."""
+        # A manual sync overrides any in-flight move.
+        await self._cancel_pending_move()
+
         clamped = max(0.0, min(float(self._max_angle), float(position)))
         _LOGGER.info(
             "%s: synced position %.1f° -> %.1f°",
@@ -367,6 +506,7 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         )
         self._position = clamped
         self._presses_since_sync = 0
+        self._presses_to_suppress = 0
         self._last_sync_at = dt_util.utcnow()
         self.async_write_ha_state()
 

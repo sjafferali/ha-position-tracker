@@ -133,18 +133,37 @@ Every tracked number exposes:
 | `last_sync_at`               | ISO timestamp of last `set_position` call    |
 | `seconds_since_sync`         | Convenience derived value                    |
 
+## Slider re-targeting mid-motion
+
+Dragging the slider to a new value while a previous move is still running
+is handled cleanly: the in-flight move is cancelled, the position is
+corrected to reflect only the presses that actually fired, the source is
+sent a `stop_cover`, and the new move starts from the corrected position.
+The same happens if you call `position_tracker.set_position` while a move
+is in flight (the manual value wins).
+
+There may be a small residual error (~1 press worth) at the moment of
+cancellation, because the press in flight when you re-targeted may or may
+not have fully completed. Snap to a known value when convenient if it
+drifts.
+
 ## Versions
 
+- **v0.4.0**: Properly cancel/supersede an in-flight slider move when a new
+  target arrives; correct position on cancellation; non-breaking.
+- **v0.3.1**: Fix options-flow 500 error; fix slider snap-back via
+  optimistic update.
 - **v0.3.0**: Switch from 0–100% to degrees with per-motor `max_angle`
   (breaking — re-add the integration).
 - **v0.2.0**: Switch from cover entities to number entities (breaking).
 - **v0.1.x**: Initial cover-based implementation.
 
-### Migrating from earlier versions
+### Migrating from v0.2.x or earlier
 
 After updating in HACS and restarting, old entities will become orphaned.
 Remove the existing Position Tracker config entry and add it again — the
-setup wizard now asks for `max_angle` per motor.
+setup wizard now asks for `max_angle` per motor. (v0.3.x → v0.4.0 is a
+plain update, no re-add needed.)
 
 ## License
 
