@@ -19,13 +19,13 @@
         }
       },
       "menu": {
-        "title": "{count} cover(s) configured: {names}",
-        "description": "Add another tracked cover or finish setup."
+        "title": "Tracked covers",
+        "description": "{count} configured: {names}\n\nAdd another tracked cover or finish setup.",
+        "menu_options": {
+          "add_cover": "Add another cover",
+          "finish": "Finish"
+        }
       }
-    },
-    "menu_options": {
-      "add_cover": "Add another cover",
-      "finish": "Finish"
     },
     "error": {
       "empty_name": "Name cannot be empty.",
