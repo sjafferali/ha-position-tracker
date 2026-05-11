@@ -118,6 +118,14 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         self._presses_since_sync = 0
         self._last_sync_at: datetime | None = None
 
+        # While we're firing presses ourselves from async_set_native_value,
+        # we set the position optimistically up front. Each forwarded
+        # service call still reaches our service-call listener, but we want
+        # those self-initiated counts to skip the position update (so the
+        # slider doesn't snap from the optimistic target back to the
+        # incrementally-counted intermediate values).
+        self._presses_to_suppress = 0
+
         self._attr_unique_id = (
             f"{entry_id}_{_slugify(source_entity)}_{_slugify(name)}"
         )
@@ -194,16 +202,30 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         if not _service_targets_entity(data, self._source_entity):
             return
         direction = "open" if service == "open_cover" else "close"
-        self._count_press(direction)
 
-    def _count_press(self, direction: str) -> None:
-        """Apply a single press worth of motion to position."""
-        if direction == "open":
-            self._position = min(
-                float(self._max_angle), self._position + self._delta_per_press
-            )
-        else:
-            self._position = max(0.0, self._position - self._delta_per_press)
+        # If we're in the middle of a slider-driven set_native_value, skip
+        # the position update so the optimistic value doesn't get clobbered.
+        # We still count the press for drift tracking and update move_direction.
+        update_position = self._presses_to_suppress == 0
+        if not update_position:
+            self._presses_to_suppress -= 1
+
+        self._count_press(direction, update_position=update_position)
+
+    def _count_press(self, direction: str, *, update_position: bool = True) -> None:
+        """Apply a single press worth of motion.
+
+        If update_position is False, motion is still recorded for drift
+        tracking (presses_since_sync, move_direction) but the position
+        value itself is not changed.
+        """
+        if update_position:
+            if direction == "open":
+                self._position = min(
+                    float(self._max_angle), self._position + self._delta_per_press
+                )
+            else:
+                self._position = max(0.0, self._position - self._delta_per_press)
 
         self._presses_since_sync += 1
         self._move_direction = direction
@@ -215,8 +237,10 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         )
 
         _LOGGER.debug(
-            "%s: counted %s press, position=%.1f, presses_since_sync=%d",
-            self.entity_id, direction, self._position, self._presses_since_sync,
+            "%s: counted %s press, position=%.1f%s, presses_since_sync=%d",
+            self.entity_id, direction, self._position,
+            "" if update_position else " (suppressed)",
+            self._presses_since_sync,
         )
         self.async_write_ha_state()
 
@@ -284,10 +308,21 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         If the rounded result is 0 (target within half a press of current),
         no-op — we can't get any closer with the source's discrete motion.
 
-        Otherwise issues that many open_cover or close_cover service calls in
-        sequence. Each call is awaited so the source's pulse burst completes
-        before the next; the press counter updates via the service-call
-        listener as each call goes by.
+        Otherwise:
+          1. Optimistically set position to target and push state, so the
+             slider in the UI lands on the target value immediately
+             instead of snapping back and animating.
+          2. Mark the next N self-initiated press counts to be suppressed
+             (those will reach our service-call listener as we forward
+             cover.open_cover / close_cover calls; they'd otherwise
+             over-write the optimistic position with intermediate values).
+          3. Fire the calls sequentially, awaiting each so the source's
+             pulse burst completes before the next.
+
+        Caveat: dragging the slider again before the previous motion
+        completes will start a second loop in parallel; the bed will
+        receive interleaved commands and position will drift. Use
+        position_tracker.set_position to re-sync if that happens.
         """
         target = max(0.0, min(float(self._max_angle), float(value)))
         delta = target - self._position
@@ -305,6 +340,13 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
             "%s: target %.1f° (current %.1f°, delta %.1f°) -> firing %d %s calls",
             self.entity_id, target, self._position, delta, presses, service,
         )
+
+        # Optimistic update: jump to target immediately; suppress next N
+        # self-initiated press updates so the loop's own presses don't
+        # clobber the optimistic value.
+        self._position = target
+        self._presses_to_suppress += presses
+        self.async_write_ha_state()
 
         for _ in range(presses):
             await self.hass.services.async_call(

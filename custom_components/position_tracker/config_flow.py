@@ -174,26 +174,29 @@ class PositionTrackerConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Return the options flow handler."""
-        return PositionTrackerOptionsFlow(config_entry)
+        """Return the options flow handler.
+
+        Note: do not pass config_entry — modern HA injects self.config_entry
+        on the OptionsFlow instance automatically. Overriding __init__ to
+        assign it triggers AttributeError because config_entry is now a
+        read-only property on OptionsFlow.
+        """
+        return PositionTrackerOptionsFlow()
 
 
 class PositionTrackerOptionsFlow(OptionsFlow):
     """Edit per-cover calibration after initial setup."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Capture the entry being edited."""
-        self.config_entry = config_entry
-        self._covers: list[dict[str, Any]] = [
-            dict(c) for c in config_entry.data.get(CONF_COVERS, [])
-        ]
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Edit max_angle and presses_to_full_travel for each configured cover."""
+        covers: list[dict[str, Any]] = [
+            dict(c) for c in self.config_entry.data.get(CONF_COVERS, [])
+        ]
+
         if user_input is not None:
-            for idx, cover in enumerate(self._covers):
+            for idx, cover in enumerate(covers):
                 angle_key = f"max_angle_{idx}"
                 presses_key = f"presses_{idx}"
                 if angle_key in user_input:
@@ -205,13 +208,13 @@ class PositionTrackerOptionsFlow(OptionsFlow):
                 self.config_entry,
                 data={
                     CONF_DEVICE_NAME: self.config_entry.data[CONF_DEVICE_NAME],
-                    CONF_COVERS: self._covers,
+                    CONF_COVERS: covers,
                 },
             )
             return self.async_create_entry(title="", data={})
 
         schema_dict: dict[Any, Any] = {}
-        for idx, cover in enumerate(self._covers):
+        for idx, cover in enumerate(covers):
             schema_dict[
                 vol.Required(
                     f"max_angle_{idx}",
@@ -241,7 +244,7 @@ class PositionTrackerOptionsFlow(OptionsFlow):
                     f"- {c[CONF_NAME]} ({c[CONF_SOURCE_ENTITY]}) "
                     f"max {c.get(CONF_MAX_ANGLE, DEFAULT_MAX_ANGLE)}°, "
                     f"{c[CONF_PRESSES_TO_FULL]} presses"
-                    for c in self._covers
+                    for c in covers
                 )
             },
         )
