@@ -1,9 +1,9 @@
 # Position Tracker
 
-A Home Assistant custom integration that adds **synthetic 0–100% position
-tracking** to `cover` entities that don't have native position feedback. It
-exposes the position as a `number` entity (slider) — same UX shape as
-Eight Sleep base controls.
+A Home Assistant custom integration that adds **synthetic angle tracking
+in degrees** to `cover` entities that don't have native position feedback.
+Exposes the angle as a `number` entity (slider) — same UX as Eight Sleep
+base controls.
 
 ## What it's for
 
@@ -12,10 +12,11 @@ doors, etc.) accept open / close / stop commands but never tell you *where*
 the motor is. This integration wraps such a cover with a new `number`
 entity that:
 
-- Counts every open / close press issued against the source
-- Multiplies by a calibrated per-press delta (`100 / presses_to_full_travel`)
-- Exposes the result as a 0–100% slider you can both read and drag
-- Forwards drag-to-set into the right number of presses on the source
+- Counts every `cover.open_cover` / `cover.close_cover` call against the source
+- Multiplies by a calibrated per-press delta in degrees
+  (`max_angle / presses_to_full_travel`)
+- Exposes the result as a 0 – max° slider you can both read and drag
+- Forwards drag-to-set into the right number of source presses
 
 ## How it counts presses
 
@@ -30,12 +31,12 @@ the `move_direction` and `is_moving` attributes.
 ## Limitations
 
 - **No ground truth.** If the source cover is moved by another path the
-  integration can't observe (e.g., a physical remote on the bed), position
+  integration can't observe (e.g., a physical remote on the bed), angle
   drifts. Use the `position_tracker.set_position` service to re-sync.
 - **End-stop overrun.** Pressing past the mechanical limit still counts as a
-  press, so position estimates exceed reality at the extremes. Clamped to
-  0–100, but the over-count silently inflates `presses_since_sync`. Snap-to-
-  zero on a Flat preset (via your own automation calling
+  press, so estimates exceed reality at the extremes. Clamped to `[0, max]`,
+  but the over-count silently inflates `presses_since_sync`. Snap-to-zero on
+  a Flat preset (via your own automation calling
   `position_tracker.set_position`) is recommended.
 - **Per-press variance.** Real motors don't move identical distances under
   different loads. Drift accumulates over many presses. Re-sync periodically.
@@ -60,69 +61,90 @@ Copy `custom_components/position_tracker/` into your HA config's
 ## Setup
 
 1. **Settings → Devices & services → Add Integration → Position Tracker**
-2. Name the device (e.g., "Theater Bed Position")
+2. Name the device (e.g., "Theater Bed Angles")
 3. For each motor you want to track:
-   - Display name (e.g., "Back")
-   - Source cover entity
-   - Presses to full travel (calibration — see below)
-   - Initial position (default 0)
-4. Click "Add another position" or "Finish"
+   - **Display name**, e.g., `Back Angle`
+   - **Source cover** entity
+   - **Maximum angle (degrees)** — the motor's mechanical full-travel range
+     (typical bed values: 65° for back, 45° for legs)
+   - **Presses to full travel** — calibration; how many `open_cover` calls
+     get the source from 0° to max°
+   - **Initial angle (degrees)** — default 0
+4. Click "Add another angle" or "Finish"
 
 You'll get one `number` entity per tracked motor, e.g.:
-- `number.theater_bed_position_back`
-- `number.theater_bed_position_legs`
+- `number.theater_bed_angles_back_angle`
+- `number.theater_bed_angles_legs_angle`
 
 ### Calibrating "presses to full travel"
 
-1. Move the source cover to fully closed (0%).
+1. Move the source cover to fully closed (0°).
 2. Tap **Up** on the source until fully open. Count your taps.
 3. Use that number for "presses to full travel".
 
 You can re-edit calibration any time via Settings → Devices & services →
 Position Tracker → Configure.
 
+### Tip: lower the source's pulse count for fine slider control
+
+Many bed integrations (e.g., `ha-adjustable-bed` for OKIN CB24) default to
+3 motor pulses per `open_cover` call (~900 ms of motion). With a 65° back
+travel and 30 presses, that's ~2°/press — and 2° is the minimum step you
+can land on.
+
+For finer slider control, lower the source integration's `motor_pulse_count`
+to 1. Each press becomes ~300 ms of motion (~0.7° on the same bed), giving
+~3× finer slider precision. Total motion time per slider drag stays the
+same — you just send more, smaller commands. **Re-calibrate** the
+`presses_to_full_travel` value after changing pulse count.
+
+The trade-off: tapping the *source* cover's up/down (not the wrapper slider)
+will produce more visible stop-start gaps with a smaller pulse count.
+
 ## Service
 
 ### `position_tracker.set_position`
 
-Manually snap a tracked number's position to a known value.
+Manually snap a tracked angle to a known value (in degrees).
 
 ```yaml
 service: position_tracker.set_position
 data:
-  entity_id: number.theater_bed_position_back
-  position: 0
+  entity_id: number.theater_bed_angles_back_angle
+  position: 0   # bed is currently flat
 ```
 
-Recommended: wire this to your bed's Flat preset so position auto-snaps to
-0 when you go flat.
+Recommended: wire this to your bed's Flat preset so the angle auto-snaps to
+0° when you go flat.
 
 ## Status attributes
 
 Every tracked number exposes:
 
-| Attribute              | Meaning                                            |
-| ---------------------- | -------------------------------------------------- |
-| `source_entity`        | The wrapped cover entity ID                       |
-| `presses_to_full`      | Calibration value                                 |
-| `delta_per_press`      | `100 / presses_to_full`                           |
-| `presses_since_sync`   | Press count since last manual sync (drift indicator) |
-| `is_moving`            | True while source cover state is opening/closing  |
-| `move_direction`       | "open", "close", or null                          |
-| `last_sync_at`         | ISO timestamp of last `set_position` call         |
-| `seconds_since_sync`   | Convenience derived value                         |
+| Attribute                    | Meaning                                       |
+| ---------------------------- | --------------------------------------------- |
+| `source_entity`              | The wrapped cover entity ID                  |
+| `max_angle`                  | The configured maximum angle (degrees)       |
+| `presses_to_full`            | Calibration value                            |
+| `delta_per_press_degrees`    | `max_angle / presses_to_full`                |
+| `presses_since_sync`         | Press count since last manual sync (drift)   |
+| `is_moving`                  | True while source state is opening/closing   |
+| `move_direction`             | "open", "close", or null                     |
+| `last_sync_at`               | ISO timestamp of last `set_position` call    |
+| `seconds_since_sync`         | Convenience derived value                    |
 
 ## Versions
 
+- **v0.3.0**: Switch from 0–100% to degrees with per-motor `max_angle`
+  (breaking — re-add the integration).
 - **v0.2.0**: Switch from cover entities to number entities (breaking).
-- **v0.1.x**: Initial cover-based implementation. Deprecated.
+- **v0.1.x**: Initial cover-based implementation.
 
-### Migrating from v0.1.x
+### Migrating from earlier versions
 
-After updating in HACS and restarting:
-1. Old `cover.<...>` entities will become orphaned/unavailable.
-2. Re-add the integration via **Settings → Devices & services → + Add Integration → Position Tracker**, or just remove the old config entry and add a new one.
-3. Update any dashboards/automations to point at `number.<...>` instead of `cover.<...>`.
+After updating in HACS and restarting, old entities will become orphaned.
+Remove the existing Position Tracker config entry and add it again — the
+setup wizard now asks for `max_angle` per motor.
 
 ## License
 

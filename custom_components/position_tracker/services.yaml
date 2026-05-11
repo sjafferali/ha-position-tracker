@@ -1,28 +1,28 @@
 set_position:
   name: Sync position
   description: >-
-    Manually set a tracked cover's position to a known value. Use this when
+    Manually set a tracked angle to a known value in degrees. Use this when
     you know for certain where the source cover actually is (e.g., bed is
-    fully flat) to correct accumulated drift.
+    fully flat — sync to 0) to correct accumulated drift.
   fields:
     entity_id:
-      name: Tracked position
+      name: Tracked angle
       description: The position_tracker number entity to sync.
       required: true
-      example: number.theater_bed_position_back
+      example: number.theater_bed_position_back_angle
       selector:
         entity:
           domain: number
           integration: position_tracker
     position:
-      name: Position
-      description: The known position (0 = fully closed/flat, 100 = fully open).
+      name: Angle
+      description: The known angle in degrees (0 = flat).
       required: true
       example: 0
       default: 0
       selector:
         number:
           min: 0
-          max: 100
+          max: 180
           step: 1
-          mode: slider
+          mode: box

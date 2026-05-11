@@ -9,20 +9,21 @@
         }
       },
       "add_cover": {
-        "title": "Add tracked position",
-        "description": "Pick a source cover to wrap with position tracking. \"Presses to full travel\" is how many open-cover presses move it from fully closed to fully open. A number entity will be created exposing 0–100% as a slider.",
+        "title": "Add tracked angle",
+        "description": "Pick a source cover to wrap with angle tracking. The maximum angle is the bed motor's mechanical range in degrees (e.g., 65° for back, 45° for legs on most beds). \"Presses to full travel\" is how many open-cover presses move it from 0° to that maximum. A number entity will be created exposing 0 to max° as a slider.",
         "data": {
-          "name": "Display name (e.g., Back, Head, Legs)",
+          "name": "Display name (e.g., Back Angle, Legs Angle)",
           "source_entity": "Source cover",
+          "max_angle": "Maximum angle (degrees)",
           "presses_to_full_travel": "Presses to full travel",
-          "initial_position": "Initial position (%)"
+          "initial_position": "Initial angle (degrees)"
         }
       },
       "menu": {
-        "title": "Tracked positions",
-        "description": "{count} configured: {names}\n\nAdd another tracked position or finish setup.",
+        "title": "Tracked angles",
+        "description": "{count} configured: {names}\n\nAdd another tracked angle or finish setup.",
         "menu_options": {
-          "add_cover": "Add another position",
+          "add_cover": "Add another angle",
           "finish": "Finish"
         }
       }
@@ -48,15 +49,15 @@
   "services": {
     "set_position": {
       "name": "Sync position",
-      "description": "Manually set a tracked position number to a known value.",
+      "description": "Manually set a tracked angle to a known value (in degrees).",
       "fields": {
         "entity_id": {
-          "name": "Tracked position",
+          "name": "Tracked angle",
           "description": "The position_tracker number entity to sync."
         },
         "position": {
-          "name": "Position",
-          "description": "The known position (0 = fully closed, 100 = fully open)."
+          "name": "Angle",
+          "description": "The known angle in degrees (0 = fully flat)."
         }
       }
     }

@@ -21,10 +21,12 @@ from .const import (
     CONF_COVERS,
     CONF_DEVICE_NAME,
     CONF_INITIAL_POSITION,
+    CONF_MAX_ANGLE,
     CONF_NAME,
     CONF_PRESSES_TO_FULL,
     CONF_SOURCE_ENTITY,
     DEFAULT_INITIAL_POSITION,
+    DEFAULT_MAX_ANGLE,
     DEFAULT_PRESSES_TO_FULL,
     DOMAIN,
 )
@@ -85,16 +87,19 @@ class PositionTrackerConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_SOURCE_ENTITY] = "not_a_cover"
 
             if not errors:
+                max_angle = int(user_input[CONF_MAX_ANGLE])
+                initial = int(
+                    user_input.get(CONF_INITIAL_POSITION, DEFAULT_INITIAL_POSITION)
+                )
+                # Clamp initial to the chosen range
+                initial = max(0, min(max_angle, initial))
                 self._covers.append(
                     {
                         CONF_NAME: name,
                         CONF_SOURCE_ENTITY: source,
+                        CONF_MAX_ANGLE: max_angle,
                         CONF_PRESSES_TO_FULL: int(user_input[CONF_PRESSES_TO_FULL]),
-                        CONF_INITIAL_POSITION: int(
-                            user_input.get(
-                                CONF_INITIAL_POSITION, DEFAULT_INITIAL_POSITION
-                            )
-                        ),
+                        CONF_INITIAL_POSITION: initial,
                     }
                 )
                 return await self.async_step_menu()
@@ -115,17 +120,24 @@ class PositionTrackerConfigFlow(ConfigFlow, domain=DOMAIN):
                     EntitySelectorConfig(domain="cover")
                 ),
                 vol.Required(
+                    CONF_MAX_ANGLE, default=DEFAULT_MAX_ANGLE
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1, max=180, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Required(
                     CONF_PRESSES_TO_FULL, default=DEFAULT_PRESSES_TO_FULL
                 ): NumberSelector(
                     NumberSelectorConfig(
-                        min=1, max=200, step=1, mode=NumberSelectorMode.BOX
+                        min=1, max=500, step=1, mode=NumberSelectorMode.BOX
                     )
                 ),
                 vol.Optional(
                     CONF_INITIAL_POSITION, default=DEFAULT_INITIAL_POSITION
                 ): NumberSelector(
                     NumberSelectorConfig(
-                        min=0, max=100, step=1, mode=NumberSelectorMode.SLIDER
+                        min=0, max=180, step=1, mode=NumberSelectorMode.BOX
                     )
                 ),
             }
@@ -179,12 +191,15 @@ class PositionTrackerOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit presses_to_full_travel for each configured cover."""
+        """Edit max_angle and presses_to_full_travel for each configured cover."""
         if user_input is not None:
             for idx, cover in enumerate(self._covers):
-                key = f"presses_{idx}"
-                if key in user_input:
-                    cover[CONF_PRESSES_TO_FULL] = int(user_input[key])
+                angle_key = f"max_angle_{idx}"
+                presses_key = f"presses_{idx}"
+                if angle_key in user_input:
+                    cover[CONF_MAX_ANGLE] = int(user_input[angle_key])
+                if presses_key in user_input:
+                    cover[CONF_PRESSES_TO_FULL] = int(user_input[presses_key])
 
             self.hass.config_entries.async_update_entry(
                 self.config_entry,
@@ -199,12 +214,22 @@ class PositionTrackerOptionsFlow(OptionsFlow):
         for idx, cover in enumerate(self._covers):
             schema_dict[
                 vol.Required(
+                    f"max_angle_{idx}",
+                    default=cover.get(CONF_MAX_ANGLE, DEFAULT_MAX_ANGLE),
+                )
+            ] = NumberSelector(
+                NumberSelectorConfig(
+                    min=1, max=180, step=1, mode=NumberSelectorMode.BOX
+                )
+            )
+            schema_dict[
+                vol.Required(
                     f"presses_{idx}",
                     default=cover[CONF_PRESSES_TO_FULL],
                 )
             ] = NumberSelector(
                 NumberSelectorConfig(
-                    min=1, max=200, step=1, mode=NumberSelectorMode.BOX
+                    min=1, max=500, step=1, mode=NumberSelectorMode.BOX
                 )
             )
 
@@ -213,7 +238,9 @@ class PositionTrackerOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(schema_dict),
             description_placeholders={
                 "covers": "\n".join(
-                    f"- {c[CONF_NAME]} ({c[CONF_SOURCE_ENTITY]})"
+                    f"- {c[CONF_NAME]} ({c[CONF_SOURCE_ENTITY]}) "
+                    f"max {c.get(CONF_MAX_ANGLE, DEFAULT_MAX_ANGLE)}°, "
+                    f"{c[CONF_PRESSES_TO_FULL]} presses"
                     for c in self._covers
                 )
             },

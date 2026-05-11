@@ -28,7 +28,7 @@ from typing import Any
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_CALL_SERVICE, PERCENTAGE
+from homeassistant.const import DEGREE, EVENT_CALL_SERVICE
 from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -39,10 +39,11 @@ from .const import (
     CONF_COVERS,
     CONF_DEVICE_NAME,
     CONF_INITIAL_POSITION,
+    CONF_MAX_ANGLE,
     CONF_NAME,
     CONF_PRESSES_TO_FULL,
     CONF_SOURCE_ENTITY,
-    DEFAULT_TOLERANCE,
+    DEFAULT_MAX_ANGLE,
     DOMAIN,
     MOVE_DIRECTION_TIMEOUT_S,
     SOURCE_STATE_CLOSING,
@@ -69,6 +70,7 @@ async def async_setup_entry(
                 device_name=device_name,
                 name=cfg[CONF_NAME],
                 source_entity=cfg[CONF_SOURCE_ENTITY],
+                max_angle=cfg.get(CONF_MAX_ANGLE, DEFAULT_MAX_ANGLE),
                 presses_to_full=cfg[CONF_PRESSES_TO_FULL],
                 initial_position=cfg.get(CONF_INITIAL_POSITION, 0),
             )
@@ -79,14 +81,13 @@ async def async_setup_entry(
 
 
 class TrackedPositionNumber(NumberEntity, RestoreEntity):
-    """Number entity that mirrors a source cover and tracks position via press counting."""
+    """Number entity that mirrors a source cover and tracks angle via press counting."""
 
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_native_min_value = 0
-    _attr_native_max_value = 100
     _attr_native_step = 1
-    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_native_unit_of_measurement = DEGREE
     _attr_mode = NumberMode.SLIDER
     _attr_icon = "mdi:angle-acute"
 
@@ -96,6 +97,7 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         device_name: str,
         name: str,
         source_entity: str,
+        max_angle: int,
         presses_to_full: int,
         initial_position: int,
     ) -> None:
@@ -103,10 +105,13 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         self._entry_id = entry_id
         self._device_name = device_name
         self._source_entity = source_entity
+        self._max_angle = max(1, int(max_angle))
         self._presses_to_full = max(1, int(presses_to_full))
-        self._delta_per_press = 100.0 / self._presses_to_full
+        # Degrees of motion per source open_cover/close_cover service call.
+        self._delta_per_press = self._max_angle / self._presses_to_full
 
-        self._position: float = float(max(0, min(100, initial_position)))
+        self._attr_native_max_value = self._max_angle
+        self._position: float = float(max(0, min(self._max_angle, initial_position)))
         self._move_direction: str | None = None
         self._move_direction_timer: asyncio.TimerHandle | None = None
 
@@ -134,7 +139,8 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         if (last_state := await self.async_get_last_state()) is not None:
             if last_state.state not in (None, "", "unknown", "unavailable"):
                 try:
-                    self._position = float(last_state.state)
+                    restored = float(last_state.state)
+                    self._position = max(0.0, min(self._max_angle, restored))
                 except (TypeError, ValueError):
                     pass
 
@@ -193,7 +199,9 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
     def _count_press(self, direction: str) -> None:
         """Apply a single press worth of motion to position."""
         if direction == "open":
-            self._position = min(100.0, self._position + self._delta_per_press)
+            self._position = min(
+                float(self._max_angle), self._position + self._delta_per_press
+            )
         else:
             self._position = max(0.0, self._position - self._delta_per_press)
 
@@ -246,7 +254,7 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
 
     @property
     def native_value(self) -> float:
-        """Return current estimated position 0-100."""
+        """Return current estimated angle in degrees."""
         return float(round(self._position))
 
     @property
@@ -254,8 +262,9 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         """Diagnostic and configuration attributes."""
         attrs: dict[str, Any] = {
             "source_entity": self._source_entity,
+            "max_angle": self._max_angle,
             "presses_to_full": self._presses_to_full,
-            "delta_per_press": round(self._delta_per_press, 2),
+            "delta_per_press_degrees": round(self._delta_per_press, 2),
             "presses_since_sync": self._presses_since_sync,
             "is_moving": self._move_direction is not None,
             "move_direction": self._move_direction,
@@ -268,31 +277,33 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
         return attrs
 
     async def async_set_native_value(self, value: float) -> None:
-        """Move toward target position via open-loop press calculation.
+        """Move toward target angle via open-loop press calculation.
 
-        delta := target - current
-        presses := round(|delta| / delta_per_press), at least 1 if past tolerance
-        Issues that many open or close service calls in sequence on the source
-        cover. Each call is awaited so the source's pulse burst completes
+        presses := round(|target - current| / delta_per_press)
+
+        If the rounded result is 0 (target within half a press of current),
+        no-op — we can't get any closer with the source's discrete motion.
+
+        Otherwise issues that many open_cover or close_cover service calls in
+        sequence. Each call is awaited so the source's pulse burst completes
         before the next; the press counter updates via the service-call
         listener as each call goes by.
         """
-        target = float(value)
+        target = max(0.0, min(float(self._max_angle), float(value)))
         delta = target - self._position
 
-        if abs(delta) < DEFAULT_TOLERANCE:
+        presses = int(round(abs(delta) / self._delta_per_press))
+        if presses == 0:
             _LOGGER.debug(
-                "%s: set %s within tolerance of current %.1f, no-op",
+                "%s: target %.1f° within half a press of current %.1f°, no-op",
                 self.entity_id, target, self._position,
             )
             return
 
-        presses = max(1, int(round(abs(delta) / self._delta_per_press)))
         service = "open_cover" if delta > 0 else "close_cover"
-
         _LOGGER.info(
-            "%s: set %s -> firing %d %s calls (current %.1f, delta %.1f)",
-            self.entity_id, target, presses, service, self._position, delta,
+            "%s: target %.1f° (current %.1f°, delta %.1f°) -> firing %d %s calls",
+            self.entity_id, target, self._position, delta, presses, service,
         )
 
         for _ in range(presses):
@@ -307,9 +318,9 @@ class TrackedPositionNumber(NumberEntity, RestoreEntity):
 
     async def async_sync_position(self, position: float) -> None:
         """Snap position to a known value (called by the set_position service)."""
-        clamped = max(0.0, min(100.0, float(position)))
+        clamped = max(0.0, min(float(self._max_angle), float(position)))
         _LOGGER.info(
-            "%s: synced position %.1f -> %.1f",
+            "%s: synced position %.1f° -> %.1f°",
             self.entity_id, self._position, clamped,
         )
         self._position = clamped

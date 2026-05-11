@@ -9,11 +9,12 @@ CONF_COVERS: Final = "covers"
 CONF_SOURCE_ENTITY: Final = "source_entity"
 CONF_NAME: Final = "name"
 CONF_PRESSES_TO_FULL: Final = "presses_to_full_travel"
+CONF_MAX_ANGLE: Final = "max_angle"
 CONF_INITIAL_POSITION: Final = "initial_position"
 
 DEFAULT_PRESSES_TO_FULL: Final = 30
+DEFAULT_MAX_ANGLE: Final = 45
 DEFAULT_INITIAL_POSITION: Final = 0
-DEFAULT_TOLERANCE: Final = 3
 
 SERVICE_SET_POSITION: Final = "set_position"
 ATTR_POSITION_VALUE: Final = "position"
