@@ -1,0 +1,12 @@
+{
+  "domain": "position_tracker",
+  "name": "Position Tracker",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/sjafferali/ha-position-tracker",
+  "issue_tracker": "https://github.com/sjafferali/ha-position-tracker/issues",
+  "iot_class": "calculated",
+  "codeowners": ["@sjafferali"],
+  "dependencies": ["cover"],
+  "requirements": []
+}

@@ -1,0 +1,28 @@
+set_position:
+  name: Sync position
+  description: >-
+    Manually set a tracked cover's position to a known value. Use this when
+    you know for certain where the source cover actually is (e.g., bed is
+    fully flat) to correct accumulated drift.
+  fields:
+    entity_id:
+      name: Tracked cover
+      description: The position_tracker cover entity to sync.
+      required: true
+      example: cover.theater_bed_back_tracked
+      selector:
+        entity:
+          domain: cover
+          integration: position_tracker
+    position:
+      name: Position
+      description: The known position (0 = fully closed/flat, 100 = fully open).
+      required: true
+      example: 0
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          mode: slider

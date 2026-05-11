@@ -1,0 +1,64 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Position Tracker",
+        "description": "Name the device that groups your tracked covers (e.g., \"Theater Bed Position\").",
+        "data": {
+          "device_name": "Device name"
+        }
+      },
+      "add_cover": {
+        "title": "Add tracked cover",
+        "description": "Pick a source cover to wrap with position tracking. \"Presses to full travel\" is how many open-cover presses move it from fully closed to fully open.",
+        "data": {
+          "name": "Display name",
+          "source_entity": "Source cover",
+          "presses_to_full_travel": "Presses to full travel",
+          "initial_position": "Initial position (%)"
+        }
+      },
+      "menu": {
+        "title": "{count} cover(s) configured: {names}",
+        "description": "Add another tracked cover or finish setup."
+      }
+    },
+    "menu_options": {
+      "add_cover": "Add another cover",
+      "finish": "Finish"
+    },
+    "error": {
+      "empty_name": "Name cannot be empty.",
+      "entity_not_found": "That entity does not exist.",
+      "not_a_cover": "Source must be a cover entity.",
+      "duplicate_source": "This source cover is already being tracked."
+    },
+    "abort": {
+      "no_covers": "No covers were configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Calibration",
+        "description": "Adjust the press-to-full-travel calibration for each tracked cover.\n\n{covers}"
+      }
+    }
+  },
+  "services": {
+    "set_position": {
+      "name": "Sync position",
+      "description": "Manually set a tracked cover's position to a known value.",
+      "fields": {
+        "entity_id": {
+          "name": "Tracked cover",
+          "description": "The position_tracker cover entity to sync."
+        },
+        "position": {
+          "name": "Position",
+          "description": "The known position (0 = fully closed, 100 = fully open)."
+        }
+      }
+    }
+  }
+}
