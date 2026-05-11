@@ -6,13 +6,13 @@ set_position:
     fully flat) to correct accumulated drift.
   fields:
     entity_id:
-      name: Tracked cover
-      description: The position_tracker cover entity to sync.
+      name: Tracked position
+      description: The position_tracker number entity to sync.
       required: true
-      example: cover.theater_bed_back_tracked
+      example: number.theater_bed_position_back
       selector:
         entity:
-          domain: cover
+          domain: number
           integration: position_tracker
     position:
       name: Position

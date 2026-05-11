@@ -1,20 +1,22 @@
-"""Cover platform for Position Tracker.
+"""Number platform for Position Tracker.
 
 Wraps an existing cover entity that lacks position feedback and synthesizes
 a 0-100% position by counting how many open/close service calls have been
-issued against the source entity, multiplied by a calibrated per-press delta.
+issued against the source entity, multiplied by a calibrated per-press
+delta. Exposed as a number entity (slider) so the UX matches integrations
+like Eight Sleep that surface bed angles as direct-set sliders.
 
-Why service-call events instead of state transitions
-----------------------------------------------------
-Two back-to-back presses on the source can leave its state at "opening" the
-whole time. Home Assistant suppresses state-changed events when the value is
+Why service-call events instead of source state transitions
+-----------------------------------------------------------
+Two back-to-back presses can leave the source's state at "opening" the whole
+time. Home Assistant suppresses state-changed events when the value is
 unchanged, so a state-listener would see one event instead of two and
-under-count. Listening to EVENT_CALL_SERVICE catches every press attempt
-regardless of source state, including presses fired by us, by the source's
-own UI, by automations, or by other integrations targeting the source.
+under-count. EVENT_CALL_SERVICE catches every press attempt regardless of
+source state, including presses fired by us, by the source's own UI, by
+automations, or by other integrations.
 
-Source state transitions are still used, but only to drive is_opening /
-is_closing for accurate "moving right now" display.
+Source state transitions are still used, but only to set the `move_direction`
+attribute for "moving right now" display.
 """
 
 from __future__ import annotations
@@ -24,13 +26,9 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from homeassistant.components.cover import (
-    ATTR_POSITION,
-    CoverEntity,
-    CoverEntityFeature,
-)
+from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_CALL_SERVICE
+from homeassistant.const import EVENT_CALL_SERVICE, PERCENTAGE
 from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -59,14 +57,14 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Build a TrackedPositionCover for each configured source."""
+    """Build a TrackedPositionNumber for each configured source cover."""
     device_name: str = entry.data[CONF_DEVICE_NAME]
     covers_config: list[dict[str, Any]] = entry.data.get(CONF_COVERS, [])
 
-    entities: list[TrackedPositionCover] = []
+    entities: list[TrackedPositionNumber] = []
     for cfg in covers_config:
         entities.append(
-            TrackedPositionCover(
+            TrackedPositionNumber(
                 entry_id=entry.entry_id,
                 device_name=device_name,
                 name=cfg[CONF_NAME],
@@ -80,17 +78,17 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class TrackedPositionCover(CoverEntity, RestoreEntity):
-    """Cover that mirrors a source cover and tracks position via press counting."""
+class TrackedPositionNumber(NumberEntity, RestoreEntity):
+    """Number entity that mirrors a source cover and tracks position via press counting."""
 
     _attr_should_poll = False
-    _attr_has_entity_name = False
-    _attr_supported_features = (
-        CoverEntityFeature.OPEN
-        | CoverEntityFeature.CLOSE
-        | CoverEntityFeature.STOP
-        | CoverEntityFeature.SET_POSITION
-    )
+    _attr_has_entity_name = True
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_mode = NumberMode.SLIDER
+    _attr_icon = "mdi:angle-acute"
 
     def __init__(
         self,
@@ -101,7 +99,7 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
         presses_to_full: int,
         initial_position: int,
     ) -> None:
-        """Initialize the tracked cover."""
+        """Initialize the tracked position number."""
         self._entry_id = entry_id
         self._device_name = device_name
         self._source_entity = source_entity
@@ -118,25 +116,25 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
         self._attr_unique_id = (
             f"{entry_id}_{_slugify(source_entity)}_{_slugify(name)}"
         )
-        self._attr_name = f"{device_name} {name}"
+        # has_entity_name=True: HA will compose "<device> <name>" automatically
+        self._attr_name = name
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry_id)},
             "name": device_name,
             "manufacturer": "Position Tracker",
         }
 
-        self._unsub_state: callable | None = None
-        self._unsub_service: callable | None = None
+        self._unsub_state = None
+        self._unsub_service = None
 
     async def async_added_to_hass(self) -> None:
         """Restore last known position and subscribe to source signals."""
         await super().async_added_to_hass()
 
         if (last_state := await self.async_get_last_state()) is not None:
-            stored = last_state.attributes.get("current_position")
-            if stored is not None:
+            if last_state.state not in (None, "", "unknown", "unavailable"):
                 try:
-                    self._position = float(stored)
+                    self._position = float(last_state.state)
                 except (TypeError, ValueError):
                     pass
 
@@ -159,7 +157,6 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
             [self._source_entity],
             self._handle_source_state_change,
         )
-
         self._unsub_service = self.hass.bus.async_listen(
             EVENT_CALL_SERVICE, self._handle_service_call
         )
@@ -188,10 +185,8 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
         service = data.get("service")
         if service not in ("open_cover", "close_cover"):
             return
-
         if not _service_targets_entity(data, self._source_entity):
             return
-
         direction = "open" if service == "open_cover" else "close"
         self._count_press(direction)
 
@@ -205,9 +200,6 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
         self._presses_since_sync += 1
         self._move_direction = direction
 
-        # Schedule a fallback clear of move_direction in case the source's state
-        # transition out of opening/closing isn't observed (suppressed events,
-        # missed transitions, source disconnects mid-press, etc.).
         if self._move_direction_timer is not None:
             self._move_direction_timer.cancel()
         self._move_direction_timer = self.hass.loop.call_later(
@@ -216,10 +208,7 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
 
         _LOGGER.debug(
             "%s: counted %s press, position=%.1f, presses_since_sync=%d",
-            self.entity_id,
-            direction,
-            self._position,
-            self._presses_since_sync,
+            self.entity_id, direction, self._position, self._presses_since_sync,
         )
         self.async_write_ha_state()
 
@@ -230,15 +219,14 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
         self._move_direction_timer = None
         self.async_write_ha_state()
 
-    # Source state observation (drives is_opening/is_closing display)
+    # Source state observation (drives move_direction attribute)
 
     @callback
     def _handle_source_state_change(self, event: Event) -> None:
-        """Update is_opening/is_closing from source state."""
+        """Update move_direction from source state."""
         new_state: State | None = event.data.get("new_state")
         if new_state is None:
             return
-
         value = new_state.state
         if value == SOURCE_STATE_OPENING:
             new_dir = "open"
@@ -254,27 +242,12 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
                 self._move_direction_timer = None
             self.async_write_ha_state()
 
-    # Cover entity properties
+    # NumberEntity contract
 
     @property
-    def current_cover_position(self) -> int | None:
+    def native_value(self) -> float:
         """Return current estimated position 0-100."""
-        return int(round(self._position))
-
-    @property
-    def is_closed(self) -> bool | None:
-        """True if at fully closed (flat) position."""
-        return self._position < 1
-
-    @property
-    def is_opening(self) -> bool:
-        """True while source cover is opening."""
-        return self._move_direction == "open"
-
-    @property
-    def is_closing(self) -> bool:
-        """True while source cover is closing."""
-        return self._move_direction == "close"
+        return float(round(self._position))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -284,6 +257,8 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
             "presses_to_full": self._presses_to_full,
             "delta_per_press": round(self._delta_per_press, 2),
             "presses_since_sync": self._presses_since_sync,
+            "is_moving": self._move_direction is not None,
+            "move_direction": self._move_direction,
         }
         if self._last_sync_at is not None:
             attrs["last_sync_at"] = self._last_sync_at.isoformat()
@@ -292,50 +267,22 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
             )
         return attrs
 
-    # Cover commands (forward to source)
-
-    async def async_open_cover(self, **kwargs: Any) -> None:
-        """Forward open to the source cover."""
-        await self.hass.services.async_call(
-            "cover",
-            "open_cover",
-            {"entity_id": self._source_entity},
-            blocking=True,
-        )
-
-    async def async_close_cover(self, **kwargs: Any) -> None:
-        """Forward close to the source cover."""
-        await self.hass.services.async_call(
-            "cover",
-            "close_cover",
-            {"entity_id": self._source_entity},
-            blocking=True,
-        )
-
-    async def async_stop_cover(self, **kwargs: Any) -> None:
-        """Forward stop to the source cover."""
-        await self.hass.services.async_call(
-            "cover",
-            "stop_cover",
-            {"entity_id": self._source_entity},
-            blocking=True,
-        )
-
-    async def async_set_cover_position(self, **kwargs: Any) -> None:
-        """Open-loop press toward target.
+    async def async_set_native_value(self, value: float) -> None:
+        """Move toward target position via open-loop press calculation.
 
         delta := target - current
         presses := round(|delta| / delta_per_press), at least 1 if past tolerance
-        Issue that many open or close service calls in sequence.
-        Each call is awaited so the source's pulse burst completes before the
-        next; the press counter updates via the service-call listener.
+        Issues that many open or close service calls in sequence on the source
+        cover. Each call is awaited so the source's pulse burst completes
+        before the next; the press counter updates via the service-call
+        listener as each call goes by.
         """
-        target = float(kwargs[ATTR_POSITION])
+        target = float(value)
         delta = target - self._position
 
         if abs(delta) < DEFAULT_TOLERANCE:
             _LOGGER.debug(
-                "%s: set_position %s within tolerance of current %.1f, no-op",
+                "%s: set %s within tolerance of current %.1f, no-op",
                 self.entity_id, target, self._position,
             )
             return
@@ -344,7 +291,7 @@ class TrackedPositionCover(CoverEntity, RestoreEntity):
         service = "open_cover" if delta > 0 else "close_cover"
 
         _LOGGER.info(
-            "%s: set_position %s -> firing %d %s calls (current %.1f, delta %.1f)",
+            "%s: set %s -> firing %d %s calls (current %.1f, delta %.1f)",
             self.entity_id, target, presses, service, self._position, delta,
         )
 

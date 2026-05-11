@@ -18,7 +18,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.COVER]
+PLATFORMS: list[Platform] = [Platform.NUMBER]
 
 SET_POSITION_SCHEMA = vol.Schema(
     {
@@ -40,9 +40,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         position: int = call.data[ATTR_POSITION_VALUE]
 
         for entry_data in hass.data.get(DOMAIN, {}).values():
-            for tracked_cover in entry_data.get("entities", []):
-                if tracked_cover.entity_id == entity_id:
-                    await tracked_cover.async_sync_position(position)
+            for tracked in entry_data.get("entities", []):
+                if tracked.entity_id == entity_id:
+                    await tracked.async_sync_position(position)
                     return
 
         _LOGGER.warning(

@@ -9,20 +9,20 @@
         }
       },
       "add_cover": {
-        "title": "Add tracked cover",
-        "description": "Pick a source cover to wrap with position tracking. \"Presses to full travel\" is how many open-cover presses move it from fully closed to fully open.",
+        "title": "Add tracked position",
+        "description": "Pick a source cover to wrap with position tracking. \"Presses to full travel\" is how many open-cover presses move it from fully closed to fully open. A number entity will be created exposing 0–100% as a slider.",
         "data": {
-          "name": "Display name",
+          "name": "Display name (e.g., Back, Head, Legs)",
           "source_entity": "Source cover",
           "presses_to_full_travel": "Presses to full travel",
           "initial_position": "Initial position (%)"
         }
       },
       "menu": {
-        "title": "Tracked covers",
-        "description": "{count} configured: {names}\n\nAdd another tracked cover or finish setup.",
+        "title": "Tracked positions",
+        "description": "{count} configured: {names}\n\nAdd another tracked position or finish setup.",
         "menu_options": {
-          "add_cover": "Add another cover",
+          "add_cover": "Add another position",
           "finish": "Finish"
         }
       }
@@ -48,11 +48,11 @@
   "services": {
     "set_position": {
       "name": "Sync position",
-      "description": "Manually set a tracked cover's position to a known value.",
+      "description": "Manually set a tracked position number to a known value.",
       "fields": {
         "entity_id": {
-          "name": "Tracked cover",
-          "description": "The position_tracker cover entity to sync."
+          "name": "Tracked position",
+          "description": "The position_tracker number entity to sync."
         },
         "position": {
           "name": "Position",
